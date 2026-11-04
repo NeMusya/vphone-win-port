@@ -1,0 +1,139 @@
+diff -ruN vb/crates/reims-vgpu-vulkan/Cargo.toml vn/crates/reims-vgpu-vulkan/Cargo.toml
+--- vb/crates/reims-vgpu-vulkan/Cargo.toml	2026-11-03 19:02:00.480288822 +0000
++++ vn/crates/reims-vgpu-vulkan/Cargo.toml	2026-11-03 19:02:00.481429097 +0000
+@@ -49,6 +49,7 @@
+     "Win32_Security",
+     "Win32_Storage_FileSystem",
+     "Win32_System_Memory",
++    "Win32_System_Performance",
+     "Win32_System_SystemInformation",
+     "Win32_System_Threading",
+ ] }
+diff -ruN vb/crates/reims-vgpu-vulkan/src/gpu/frame_cost.rs vn/crates/reims-vgpu-vulkan/src/gpu/frame_cost.rs
+--- vb/crates/reims-vgpu-vulkan/src/gpu/frame_cost.rs	2026-11-03 19:02:00.496345360 +0000
++++ vn/crates/reims-vgpu-vulkan/src/gpu/frame_cost.rs	2026-11-03 19:02:00.497533087 +0000
+@@ -130,7 +130,45 @@
+     }
+ }
+ 
++/// CPU time in nanoseconds on Windows: this thread's and the process's (kernel plus user time),
++/// and the monotonic clock's (the performance counter), in the order of the Unix form below.
++#[cfg(windows)]
++fn cpu_now() -> [u64; 3] {
++    use windows_sys::Win32::Foundation::FILETIME;
++    use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
++    use windows_sys::Win32::System::Threading::{
++        GetCurrentProcess, GetCurrentThread, GetProcessTimes, GetThreadTimes,
++    };
++    // FILETIME counts units of 100 ns.
++    fn ticks(t: FILETIME) -> u64 {
++        ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) * 100
++    }
++    fn zero() -> FILETIME {
++        FILETIME {
++            dwLowDateTime: 0,
++            dwHighDateTime: 0,
++        }
++    }
++    let (mut c, mut e, mut k, mut u) = (zero(), zero(), zero(), zero());
++    // SAFETY: the pseudo-handle is this thread's; the out-parameters are writable.
++    unsafe { GetThreadTimes(GetCurrentThread(), &mut c, &mut e, &mut k, &mut u) };
++    let thread = ticks(k) + ticks(u);
++    let (mut c, mut e, mut k, mut u) = (zero(), zero(), zero(), zero());
++    // SAFETY: the pseudo-handle is this process's; the out-parameters are writable.
++    unsafe { GetProcessTimes(GetCurrentProcess(), &mut c, &mut e, &mut k, &mut u) };
++    let process = ticks(k) + ticks(u);
++    let (mut count, mut freq) = (0i64, 0i64);
++    // SAFETY: both out-parameters are writable.
++    unsafe {
++        QueryPerformanceCounter(&mut count);
++        QueryPerformanceFrequency(&mut freq);
++    }
++    let wall = (count as u128 * 1_000_000_000 / freq.max(1) as u128) as u64;
++    [thread, process, wall]
++}
++
+ /// CPU time in nanoseconds: this thread's, the process's, and the monotonic clock's (wall).
++#[cfg(not(windows))]
+ fn cpu_now() -> [u64; 3] {
+     #[repr(C)]
+     struct Timespec {
+diff -ruN vb/crates/reims-vgpu-vulkan/src/os/windows/vm.rs vn/crates/reims-vgpu-vulkan/src/os/windows/vm.rs
+--- vb/crates/reims-vgpu-vulkan/src/os/windows/vm.rs	2026-11-03 19:02:00.482783321 +0000
++++ vn/crates/reims-vgpu-vulkan/src/os/windows/vm.rs	2026-11-03 19:02:00.486915645 +0000
+@@ -554,3 +554,63 @@
+ pub(crate) fn allocate_zeros(len: u64) -> Result<HostAddr, KernReturn> {
+     allocate_aliasable(len)
+ }
++
++// ---- test helpers (the Linux and macOS layers have the same three) ----
++
++#[cfg(test)]
++use windows_sys::Win32::System::Memory::{PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_WRITECOPY};
++
++/// The host's page, which the tests lay their pages out by.
++#[cfg(test)]
++pub(crate) const PAGE: u64 = 0x1000;
++
++/// Whether `check` holds for the region of every page run in `[addr, addr + len)`, as
++/// `VirtualQuery` reports the regions now.
++#[cfg(test)]
++fn every_region(addr: u64, len: u64, check: impl Fn(&MEMORY_BASIC_INFORMATION) -> bool) -> bool {
++    let end = addr + len;
++    let mut at = addr;
++    while at < end {
++        let mut mbi: MEMORY_BASIC_INFORMATION = unsafe { std::mem::zeroed() };
++        // SAFETY: a writable MEMORY_BASIC_INFORMATION of the size passed.
++        let got = unsafe {
++            VirtualQuery(
++                at as usize as *const c_void,
++                &mut mbi,
++                std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
++            )
++        };
++        if got == 0 || !check(&mbi) {
++            return false;
++        }
++        let region_end = mbi.BaseAddress as usize as u64 + mbi.RegionSize as u64;
++        if region_end <= at {
++            return false;
++        }
++        at = region_end;
++    }
++    true
++}
++
++/// Whether every page of `len` bytes from `at` is writable now: committed, with write access.
++/// Like the Linux form, it reads the current protection, so a page lowered to read refuses.
++#[cfg(test)]
++pub(crate) fn writable(at: HostAddr, len: u64) -> bool {
++    const WRITABLE: [u32; 4] = [
++        PAGE_READWRITE,
++        PAGE_WRITECOPY,
++        PAGE_EXECUTE_READWRITE,
++        PAGE_EXECUTE_WRITECOPY,
++    ];
++    every_region(at.addr() as u64, len, |m| {
++        m.State == MEM_COMMIT && WRITABLE.contains(&m.Protect)
++    })
++}
++
++/// Whether the page at `at` is mapped: committed. A freed page is a placeholder, reserved but not
++/// committed, so it is not.
++#[cfg(test)]
++pub(crate) fn mapped(at: HostAddr) -> bool {
++    every_region(at.addr() as u64 & !(PAGE - 1), PAGE, |m| m.State == MEM_COMMIT)
++}
++
+diff -ruN vb/crates/reims-vgpu-vulkan/src/os/windows.rs vn/crates/reims-vgpu-vulkan/src/os/windows.rs
+--- vb/crates/reims-vgpu-vulkan/src/os/windows.rs	2026-11-03 19:02:00.490784198 +0000
++++ vn/crates/reims-vgpu-vulkan/src/os/windows.rs	2026-11-03 19:02:00.492140839 +0000
+@@ -24,6 +24,8 @@
+ 
+ mod vm;
+ pub(crate) use vm::{allocate_aliasable, allocate_zeros};
++#[cfg(test)]
++pub(crate) use vm::{PAGE, mapped, writable};
+ use crate::platform::VulkanPlatform;
+ 
+ /// Stops the process: the named service is not written for Windows yet.

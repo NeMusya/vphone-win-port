@@ -1,0 +1,30 @@
+diff -ruN dvorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-devtools/src/scratch.rs dvnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-devtools/src/scratch.rs
+--- dvorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-devtools/src/scratch.rs	2026-11-01 00:40:58.871963519 +0000
++++ dvnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-devtools/src/scratch.rs	2026-11-01 00:40:58.928165398 +0000
+@@ -166,6 +166,7 @@
+ /// Whether the open file `held` is still the file `path` names, by the one identity a file system
+ /// gives a file: its device and inode. A rename or an unlink of `path` makes this false, and
+ /// `held` keeps working on a file with no name.
++#[cfg(unix)]
+ fn same_file(held: &File, path: &Path) -> io::Result<bool> {
+     use std::os::unix::fs::MetadataExt;
+     let held = held.metadata()?;
+@@ -174,6 +175,18 @@
+         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+         Err(error) => Err(error),
+     }
++}
++
++/// Windows has no device-and-inode pair in std, so this answers by the path alone: whether a file
++/// still has that name. An unlink is caught; a rename to another name and back is not. It only
++/// serves the tests (this crate is a dev-dependency), which never rename the lock they check.
++#[cfg(not(unix))]
++fn same_file(_held: &File, path: &Path) -> io::Result<bool> {
++    match std::fs::metadata(path) {
++        Ok(_) => Ok(true),
++        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
++        Err(error) => Err(error),
++    }
+ }
+ 
+ /// Whether [`Owned`] creates its directory or leaves it to whatever writes there.

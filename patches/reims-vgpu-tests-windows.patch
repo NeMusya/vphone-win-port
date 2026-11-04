@@ -1,0 +1,34 @@
+diff -ruN rvo/crates/reims-vgpu-core/src/testkit/mod.rs rvn/crates/reims-vgpu-core/src/testkit/mod.rs
+--- rvo/crates/reims-vgpu-core/src/testkit/mod.rs	2026-11-03 18:36:28.178595704 +0000
++++ rvn/crates/reims-vgpu-core/src/testkit/mod.rs	2026-11-03 18:36:28.230028236 +0000
+@@ -20,6 +20,8 @@
+ pub mod calllog;
+ pub mod capture;
+ pub mod clock;
++// The subprocess death harness forks and reads signal state: Unix only.
++#[cfg(unix)]
+ pub mod death;
+ pub mod faults;
+ pub mod guest_ram;
+diff -ruN rvo/crates/reims-vgpu-vulkan/src/gpu/encode_render/tests/metal_tests.rs rvn/crates/reims-vgpu-vulkan/src/gpu/encode_render/tests/metal_tests.rs
+--- rvo/crates/reims-vgpu-vulkan/src/gpu/encode_render/tests/metal_tests.rs	2026-11-03 18:36:28.178723483 +0000
++++ rvn/crates/reims-vgpu-vulkan/src/gpu/encode_render/tests/metal_tests.rs	2026-11-03 18:36:28.232177326 +0000
+@@ -1859,6 +1859,7 @@
+     blit.encode(OnFault::Die, reset).unwrap();
+ }
+ 
++#[cfg(unix)]
+ reims_vgpu_core::death_test!(
+     /// An execution of a buffer whose records the GPU may have written (a blit's reset of another
+     /// of its commands) is asked at the runtime's host step, once the work before it completed:
+diff -ruN rvo/crates/reims-vgpu-vulkan/src/gpu/predication.rs rvn/crates/reims-vgpu-vulkan/src/gpu/predication.rs
+--- rvo/crates/reims-vgpu-vulkan/src/gpu/predication.rs	2026-11-03 18:36:28.178942237 +0000
++++ rvn/crates/reims-vgpu-vulkan/src/gpu/predication.rs	2026-11-03 18:36:28.233216278 +0000
+@@ -3322,6 +3322,7 @@
+         });
+     }
+ 
++    #[cfg(unix)]
+     reims_vgpu_core::death_test!(
+         /// A loop still running after its iterations laid down ends the process at the command
+         /// buffer's completion, at its End's selector: Metal would run it on

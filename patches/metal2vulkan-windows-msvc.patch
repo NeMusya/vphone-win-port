@@ -1,0 +1,132 @@
+diff -ruN m2vorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/buffer_descriptor.rs m2vnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/buffer_descriptor.rs
+--- m2vorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/buffer_descriptor.rs	2026-10-31 23:53:37.957505179 +0000
++++ m2vnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/buffer_descriptor.rs	2026-10-31 23:53:38.579227954 +0000
+@@ -823,18 +823,29 @@
+     /// its length as plain Metal does (`Buffer::copy_reach`); where the device's memory
+     /// requirements of that buffer run past the window, it holds its padded length ([`based_size`])
+     /// instead.
+-    fn host_buffer(&self, window: &ImportWindow, length: u64) -> Result<HostBuffer, Error> {
++    ///
++    /// `start` is the window's first byte, where the pointer's memory types are asked. Where the
++    /// buffer made for host allocations takes none of the types the pointer does, the buffer is
++    /// made without the host-allocation handle type instead (see [`make_sized`]).
++    fn host_buffer(
++        &self,
++        importer: &Importer,
++        start: Option<NonNull<u8>>,
++        window: &ImportWindow,
++        length: u64,
++    ) -> Result<HostBuffer, Error> {
+         let shared = self.shared();
+         let raw_device = shared.vk();
+-        let make_sized = |base: u64, size: u64| {
+-            let mut external = vk::ExternalMemoryBufferCreateInfo::default()
++        let make_with = |base: u64, size: u64, external: bool| {
++            let mut external_info = vk::ExternalMemoryBufferCreateInfo::default()
+                 .handle_types(vk::ExternalMemoryHandleTypeFlags::HOST_ALLOCATION_EXT);
+-            let info = shared.sharing().buffer(
+-                vk::BufferCreateInfo::default()
+-                    .size(size)
+-                    .usage(usage(shared.device_address))
+-                    .push_next(&mut external),
+-            );
++            let mut info = vk::BufferCreateInfo::default()
++                .size(size)
++                .usage(usage(shared.device_address));
++            if external {
++                info = info.push_next(&mut external_info);
++            }
++            let info = shared.sharing().buffer(info);
+             // SAFETY: the device is live and `info` and its chain valid.
+             let raw = unsafe { crate::creation::buffer(raw_device, &info) }.map_err(vulkan)?;
+             shared.counts.buffer_made(info.usage);
+@@ -847,6 +858,32 @@
+                 requirements,
+             })
+         };
++        // The memory types the window's pointer takes, asked once. Where the buffer made with the
++        // host-allocation handle type takes none of them, the buffer is made without it: the
++        // driver can refuse the pairing even where it reports the handle type importable (AMD's
++        // Windows driver does), and a buffer without the handle type takes the pointer's types.
++        // The fallback departs from the specification, so it is logged where it is taken.
++        let pointer_types = start.and_then(|start| {
++            // SAFETY: the window's first byte is host memory of this process, aligned to the
++            // window (the caller's contract), which the query reads no further than.
++            unsafe { importer.memory_types(raw_device, start) }.ok()
++        });
++        let make_sized = |base: u64, size: u64| {
++            let buffer = make_with(base, size, true)?;
++            let refused = pointer_types
++                .is_some_and(|types| buffer.requirements.memory_type_bits & types == 0);
++            if !refused {
++                return Ok(buffer);
++            }
++            // SAFETY: the buffer is unused.
++            unsafe { release::object(raw_device, buffer.raw) };
++            eprintln!(
++                "reims-vgpu: the driver's buffers for host allocations take none of the memory \
++                 types the imported pointer takes; the buffer is made without the \
++                 host-allocation handle type"
++            );
++            make_with(base, size, false)
++        };
+         let make = |base: u64| {
+             let padded = based_size(base, length).ok_or_else(not_importable)?;
+             // The window from `base` bytes below the buffer's bytes to its end: where it binds
+@@ -937,9 +974,9 @@
+         class: MemoryClass,
+         drops_writes: bool,
+     ) -> Result<(HostBuffer, Placement), Error> {
+-        let buffer = self.host_buffer(window, length)?;
+         // The window starts `window.offset` bytes before the pointer, in the pages it touches.
+         let start = pointer.as_ptr().wrapping_sub(window.offset as usize);
++        let buffer = self.host_buffer(importer, NonNull::new(start), window, length)?;
+         let class = (class, drops_writes);
+         // SAFETY: the caller's, and the buffer is a new one of this device.
+         match unsafe { self.import_backing(importer, &buffer, start, window, class) } {
+diff -ruN m2vorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/rebind.rs m2vnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/rebind.rs
+--- m2vorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/rebind.rs	2026-10-31 23:53:38.173597883 +0000
++++ m2vnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/rebind.rs	2026-10-31 23:53:38.580798466 +0000
+@@ -731,12 +731,14 @@
+ impl ImportHold {
+     /// Held weakly from now on.
+     fn wait(&mut self) {
++        #[cfg(unix)]
+         match self {
+-            #[cfg(unix)]
+             ImportHold::Held(held) => *self = ImportHold::Waiting(Arc::downgrade(held)),
+-            #[cfg(unix)]
+             ImportHold::Waiting(_) => {}
+         }
++        // Off unix the enum has no variants: there is nothing to wait for.
++        #[cfg(not(unix))]
++        match *self {}
+     }
+ 
+     /// The objects, held until the command buffer completes: `None` where they went.
+diff -ruN m2vorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/texture.rs m2vnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/texture.rs
+--- m2vorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/texture.rs	2026-10-31 23:53:38.412534743 +0000
++++ m2vnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/texture.rs	2026-10-31 23:53:38.582695825 +0000
+@@ -177,7 +177,6 @@
+ mod in_place_image;
+ pub(super) mod kept_image;
+ pub(super) mod requirements;
+-#[cfg(unix)]
+ mod rotation;
+ mod shared;
+ pub(super) mod signed_depth;
+@@ -665,6 +664,14 @@
+ #[cfg(not(unix))]
+ pub(super) type ImageImport = std::convert::Infallible;
+ 
++/// No dma-buf is ever acquired on this system (the dma-buf module is unix-only).
++#[cfg(not(unix))]
++impl Device {
++    pub(super) fn foreign_acquirer(&self) -> u32 {
++        ash::vk::QUEUE_FAMILY_IGNORED
++    }
++}
++
+ impl Raw {
+     fn new(raw: vk::Image) -> Raw {
+         Raw {

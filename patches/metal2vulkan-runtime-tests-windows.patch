@@ -1,0 +1,12 @@
+diff -ruN drorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/tests/degradation.rs drnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/tests/degradation.rs
+--- drorig/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/tests/degradation.rs	2026-11-03 18:29:43.466200990 +0000
++++ drnew/metal2vulkan-cd1a08ae5442065a11af0fb79d1bdc35c1f0e1b9/crates/metal2vulkan-runtime/src/tests/degradation.rs	2026-11-03 18:29:43.522659167 +0000
+@@ -243,6 +243,8 @@
+ /// assertions are on, and exits otherwise; the parent then checks the rule's answers in a joined
+ /// set's pieces (the caller's own and a pool thread's), on a runtime thread, and on the program's
+ /// thread.
++// Forks a child: Unix only (Windows has no fork, and the rule is checked by the tests above).
++#[cfg(unix)]
+ #[test]
+ fn an_announcement_inside_a_pipeline_pool_piece_ends_the_process_where_debug_assertions_are_on() {
+     use crate::degradation::{announcement_breach, check_announcement, Degradation, NoticePlace};
