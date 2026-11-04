@@ -1,0 +1,15 @@
+This repository contains patches to, and notes about, two projects licensed under the same
+terms: reims-vgpu and metal2vulkan. The patches and probe programs in this repository are
+licensed under the same terms, and you may use them under either of the following at your option:
+
+- the GNU General Public License, version 2, or (at your option) any later version:
+  LICENSES/GPL-2.0-or-later.txt
+- the GNU Lesser General Public License, version 3, or (at your option) any later version:
+  LICENSES/LGPL-3.0-or-later.txt (the LGPL's version 3 is a set of additional permissions to the
+  GNU General Public License, version 3, whose text is LICENSES/GPL-3.0-or-later.txt)
+
+SPDX license expression: GPL-2.0-or-later OR LGPL-3.0-or-later
+
+The upstream projects are distributed under these terms; see their own LICENSE files for the
+original copyright notices. This repository does not include Apple firmware or any Apple
+proprietary software, and must not be used to redistribute it.
